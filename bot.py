@@ -10,42 +10,38 @@ TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 HF_TOKEN = os.environ.get("HF_TOKEN")
 RENDER_URL = os.environ.get("RENDER_EXTERNAL_URL")
 
-# STABLE MODELS LIST (Lightweight & Fast)
+# NEW 2026 URLS (Router API)
+# We use "router.huggingface.co" instead of "api-inference" to fix Error 410
 MODELS = [
-    "https://api-inference.huggingface.co/models/google/gemma-1.1-2b-it",
-    "https://api-inference.huggingface.co/models/microsoft/Phi-3-mini-4k-instruct",
-    "https://api-inference.huggingface.co/models/Qwen/Qwen2.5-0.5B-Instruct"
+    "https://router.huggingface.co/hf-inference/models/microsoft/Phi-3-mini-4k-instruct",
+    "https://router.huggingface.co/hf-inference/models/Qwen/Qwen2.5-0.5B-Instruct",
+    "https://router.huggingface.co/hf-inference/models/google/gemma-1.1-2b-it"
 ]
 
 app = Flask(__name__)
 
 # =====================
-# INTELLIGENT AI HANDLER
+# AI LOGIC
 # =====================
 def ask_ai(user_text):
     headers = {"Authorization": f"Bearer {HF_TOKEN}"}
     
-    # Prompt engineering for short, human-like replies
+    # Simple prompt for fast replies
     payload = {
         "inputs": f"<|user|>\n{user_text}\n<|assistant|>\n",
         "parameters": {
             "max_new_tokens": 200, 
-            "return_full_text": False,
-            "temperature": 0.7
+            "return_full_text": False
         }
     }
-
-    # Debug: Check if Token exists
-    if not HF_TOKEN:
-        return "⚠️ Error: HF_TOKEN is missing in Render Settings."
 
     errors_log = []
 
     for model_url in MODELS:
         try:
             print(f"Connecting to: {model_url}...")
-            # Increased timeout to 35s for cold starts
-            response = requests.post(model_url, headers=headers, json=payload, timeout=35)
+            # Timeout 30s to allow waking up
+            response = requests.post(model_url, headers=headers, json=payload, timeout=30)
             
             # 1. SUCCESS
             if response.status_code == 200:
@@ -57,33 +53,29 @@ def ask_ai(user_text):
                 else:
                     return str(data)
 
-            # 2. INVALID TOKEN (Critical Fix)
-            elif response.status_code == 401:
-                return "❌ Error 401: Your HuggingFace Token is invalid. Please create a new 'WRITE' token."
-
-            # 3. MODEL LOADING (Wait & Retry)
+            # 2. MODEL LOADING (503) -> Wait & Retry
             elif response.status_code == 503:
-                print("Model loading... waiting 20s.")
+                print("Model napping... waiting 20s.")
                 time.sleep(20)
                 # Retry once
-                response = requests.post(model_url, headers=headers, json=payload, timeout=35)
+                response = requests.post(model_url, headers=headers, json=payload, timeout=30)
                 if response.status_code == 200:
                      return response.json()[0]["generated_text"].strip()
-                else:
-                    errors_log.append(f"{model_url.split('/')[-1]}: Still loading (503)")
 
-            # 4. OTHER ERRORS
+            # 3. AUTH ERROR (401)
+            elif response.status_code == 401:
+                return "❌ Error: Invalid Token. Please generate a new 'Write' token on Hugging Face."
+
             else:
-                errors_log.append(f"{model_url.split('/')[-1]}: Error {response.status_code}")
+                errors_log.append(f"{model_url}: Error {response.status_code}")
                 
         except Exception as e:
-            errors_log.append(f"{model_url.split('/')[-1]}: Connection Failed")
+            errors_log.append(f"{model_url}: Failed ({str(e)})")
 
-    # If all fail, return the debug log so we can see WHY
-    return f"⚠️ All AI models failed.\nDebug Log:\n" + "\n".join(errors_log)
+    return f"⚠️ Connection failed. Debug Info:\n" + "\n".join(errors_log)
 
 # =====================
-# TELEGRAM WEBHOOK
+# WEBHOOK
 # =====================
 @app.route("/", methods=["POST"])
 def telegram():
@@ -94,26 +86,19 @@ def telegram():
             text = data["message"].get("text", "")
             
             if text:
-                # Send "Typing..." action
                 requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendChatAction", json={"chat_id": chat_id, "action": "typing"})
-                
-                # Get Response
                 reply = ask_ai(text)
-                
-                # Send Response
                 requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage", json={"chat_id": chat_id, "text": reply})
                 
         return "ok", 200
-    except Exception as e:
-        print(f"Webhook Error: {e}")
+    except:
         return "error", 200
 
-# MANUAL RESET URL
+# RESET URL
 @app.route("/set_webhook", methods=["GET"])
 def set_webhook():
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/setWebhook?url={RENDER_URL}"
-    response = requests.get(url)
-    return f"Webhook Status: {response.text}"
+    return requests.get(url).text
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
