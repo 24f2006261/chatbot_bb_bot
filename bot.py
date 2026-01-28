@@ -1,31 +1,33 @@
 import os
-import requests
+from flask import Flask, request
 from telegram import Update
 from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTypes
 
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 HF_TOKEN = os.environ.get("HF_TOKEN")
 
-MODEL_URL = "https://api-inference.huggingface.co/models/google/flan-t5-base"
-HEADERS = {"Authorization": f"Bearer {HF_TOKEN}"}
+app = Flask(__name__)
+tg_app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
 
-async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_text = update.message.text
+async def reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Hello! Bot is working.")
 
-    payload = {
-        "inputs": f"Reply simply in short sentences. No technical language. {user_text}"
-    }
+tg_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, reply))
 
-    response = requests.post(MODEL_URL, headers=HEADERS, json=payload)
-    data = response.json()
+@app.route("/", methods=["POST"])
+async def webhook():
+    data = request.get_json(force=True)
+    update = Update.de_json(data, tg_app.bot)
+    await tg_app.process_update(update)
+    return "ok"
 
-    try:
-        reply = data[0]["generated_text"]
-    except:
-        reply = "I'm here 🙂 Ask something simple."
+@app.route("/", methods=["GET"])
+def index():
+    return "Bot running"
 
-    await update.message.reply_text(reply)
-
-app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
-app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, chat))
-app.run_polling()
+if __name__ == "__main__":
+    tg_app.initialize()
+    tg_app.bot.set_webhook(
+        url=os.environ["RENDER_EXTERNAL_URL"]
+    )
+    app.run(host="0.0.0.0", port=10000)
