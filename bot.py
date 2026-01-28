@@ -10,7 +10,8 @@ HF_TOKEN = os.environ["HF_TOKEN"]
 RENDER_EXTERNAL_URL = os.environ["RENDER_EXTERNAL_URL"]
 
 TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
-HF_API = "https://api-inference.huggingface.co/models/microsoft/DialoGPT-medium"
+HF_API = "https://api-inference.huggingface.co/models/google/flan-t5-base"
+
 
 app = Flask(__name__)
 
@@ -31,21 +32,29 @@ def ask_ai(text):
     headers = {
         "Authorization": f"Bearer {HF_TOKEN}"
     }
+
     response = requests.post(
         HF_API,
         headers=headers,
         json={"inputs": text},
-        timeout=30
+        timeout=60
     )
 
+    # If model is loading
+    if response.status_code == 503:
+        return "AI is waking up 😴, try again in 20 seconds."
+
     if response.status_code != 200:
-        return "AI is busy right now."
+        return "AI error, please try again."
 
     data = response.json()
+
+    # flan-t5 format
     if isinstance(data, list) and "generated_text" in data[0]:
         return data[0]["generated_text"]
 
-    return "AI had nothing to say."
+    return "AI could not generate a reply."
+
 
 # =====================
 # WEBHOOK
