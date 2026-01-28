@@ -1,62 +1,38 @@
 import os
-import asyncio
+import requests
 from flask import Flask, request
-from telegram import Update
-from telegram.ext import (
-    ApplicationBuilder,
-    MessageHandler,
-    ContextTypes,
-    filters,
-)
 
-# =====================
-# ENV
-# =====================
 TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
 RENDER_EXTERNAL_URL = os.environ["RENDER_EXTERNAL_URL"]
 
-# =====================
-# FLASK
-# =====================
+TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
+
 app = Flask(__name__)
 
 # =====================
-# TELEGRAM APP
+# SEND MESSAGE
 # =====================
-tg_app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+def send_message(chat_id, text):
+    url = f"{TELEGRAM_API}/sendMessage"
+    payload = {
+        "chat_id": chat_id,
+        "text": text
+    }
+    requests.post(url, json=payload, timeout=10)
 
 # =====================
-# HANDLER
-# =====================
-async def reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.message:
-        await update.message.reply_text("Hello! Bot is working ✅")
-
-tg_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, reply))
-
-# =====================
-# ASYNC LOOP (IMPORTANT)
-# =====================
-loop = asyncio.new_event_loop()
-asyncio.set_event_loop(loop)
-
-async def telegram_startup():
-    await tg_app.initialize()
-    await tg_app.start()
-    await tg_app.bot.set_webhook(RENDER_EXTERNAL_URL)
-
-loop.run_until_complete(telegram_startup())
-
-# =====================
-# WEBHOOK (SYNC, SAFE)
+# WEBHOOK
 # =====================
 @app.route("/", methods=["POST"])
 def telegram_webhook():
-    update = Update.de_json(request.get_json(force=True), tg_app.bot)
-    asyncio.run_coroutine_threadsafe(
-        tg_app.process_update(update),
-        loop
-    )
+    data = request.get_json(force=True)
+
+    if "message" in data:
+        chat_id = data["message"]["chat"]["id"]
+        text = data["message"].get("text", "")
+
+        send_message(chat_id, f"Bot working ✅\nYou said: {text}")
+
     return "ok"
 
 @app.route("/", methods=["GET"])
@@ -64,7 +40,14 @@ def index():
     return "Bot running"
 
 # =====================
-# MAIN
+# SET WEBHOOK
 # =====================
 if __name__ == "__main__":
+    webhook_url = f"{RENDER_EXTERNAL_URL}/"
+    requests.get(
+        f"{TELEGRAM_API}/setWebhook",
+        params={"url": webhook_url},
+        timeout=10
+    )
+
     app.run(host="0.0.0.0", port=10000)
