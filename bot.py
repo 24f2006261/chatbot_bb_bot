@@ -10,7 +10,8 @@ HF_TOKEN = os.environ["HF_TOKEN"]
 RENDER_EXTERNAL_URL = os.environ["RENDER_EXTERNAL_URL"]
 
 TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
-HF_API = "https://api-inference.huggingface.co/models/google/flan-t5-base"
+HF_API = "https://api-inference.huggingface.co/models/mistralai/Mistral-7B-Instruct-v0.2"
+
 
 
 app = Flask(__name__)
@@ -28,33 +29,51 @@ def send_message(chat_id, text):
 # =====================
 # ASK AI
 # =====================
-def ask_ai(text):
+def ask_ai(user_text):
     headers = {
-        "Authorization": f"Bearer {HF_TOKEN}"
+        "Authorization": f"Bearer {HF_TOKEN}",
+        "Content-Type": "application/json"
+    }
+
+    payload = {
+        "inputs": f"""
+You are a helpful, intelligent AI assistant.
+Explain things clearly and naturally like a modern AI.
+Be friendly, concise, and practical.
+Do not mention models, servers, or errors.
+
+User: {user_text}
+Assistant:
+""",
+        "parameters": {
+            "max_new_tokens": 300,
+            "temperature": 0.7,
+            "top_p": 0.9,
+            "repetition_penalty": 1.1
+        }
     }
 
     response = requests.post(
         HF_API,
         headers=headers,
-        json={"inputs": text},
-        timeout=60
+        json=payload,
+        timeout=90
     )
 
-    # If model is loading
+    # HF cold start
     if response.status_code == 503:
-        return "AI is waking up 😴, try again in 20 seconds."
+        return "Hmm… give me a second, thinking about this 🤔"
 
     if response.status_code != 200:
-        return "AI error, please try again."
+        return "Let me rephrase that… can you ask again?"
 
     data = response.json()
 
-    # flan-t5 format
     if isinstance(data, list) and "generated_text" in data[0]:
-        return data[0]["generated_text"]
+        text = data[0]["generated_text"]
+        return text.split("Assistant:")[-1].strip()
 
-    return "AI could not generate a reply."
-
+    return "Alright, tell me a bit more 🙂"
 
 # =====================
 # WEBHOOK
