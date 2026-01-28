@@ -4,134 +4,77 @@ import time
 from flask import Flask, request
 
 # =====================
-# CONFIG
+# SETTINGS
 # =====================
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 HF_TOKEN = os.environ.get("HF_TOKEN")
-RENDER_EXTERNAL_URL = os.environ.get("RENDER_EXTERNAL_URL")
+RENDER_URL = os.environ.get("RENDER_EXTERNAL_URL")
 
-TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
-
-# LIST OF MODELS TO TRY (If one fails, it tries the next)
-MODELS = [
-    "https://api-inference.huggingface.co/models/microsoft/Phi-3-mini-4k-instruct",
-    "https://api-inference.huggingface.co/models/mistralai/Mistral-7B-Instruct-v0.2"
-]
+# We use "TinyLlama" because it is fast, free, and talks simply (not like a robot)
+API_URL = "https://api-inference.huggingface.co/models/TinyLlama/TinyLlama-1.1B-Chat-v1.0"
 
 app = Flask(__name__)
 
-# =====================
-# MEMORY STORAGE
-# =====================
-user_histories = {} 
-
-def get_history(user_id):
-    if user_id not in user_histories:
-        user_histories[user_id] = []
-    return user_histories[user_id]
-
-def update_history(user_id, role, content):
-    if user_id not in user_histories:
-        user_histories[user_id] = []
-    user_histories[user_id].append({"role": role, "content": content})
-    # Keep last 6 messages (Phi-3 has smaller context, keeps it fast)
-    if len(user_histories[user_id]) > 6:
-        user_histories[user_id].pop(0)
-
-# =====================
-# SEND MESSAGE
-# =====================
-def send_message(chat_id, text):
-    requests.post(
-        f"{TELEGRAM_API}/sendMessage",
-        json={"chat_id": chat_id, "text": text, "parse_mode": "Markdown"},
-        timeout=15
-    )
-
-# =====================
-# AI ENGINE (ROBUST)
-# =====================
-def query_huggingface(url, payload):
+def ask_ai(user_text):
     headers = {"Authorization": f"Bearer {HF_TOKEN}"}
-    try:
-        response = requests.post(url, headers=headers, json=payload, timeout=30)
-        return response
-    except:
-        return None
-
-def ask_ai(user_id, user_text):
-    # 1. Prepare Prompt (Phi-3 Format)
-    history = get_history(user_id)
-    prompt = "<|system|>\nYou are a helpful assistant for studies and life. Be concise.<|end|>\n"
     
-    for msg in history:
-        prompt += f"<|{msg['role']}|>\n{msg['content']}<|end|>\n"
+    # THIS PART MAKES IT HUMAN
+    # We tell the AI: "You are a friend. Keep it short."
+    prompt = f"""<|system|>
+You are a helpful friend. You help with studies, diet, and life. 
+Speak in simple, short text messages. No big words. Be kind.<|end|>
+<|user|>
+{user_text}<|end|>
+<|assistant|>
+"""
     
-    prompt += f"<|user|>\n{user_text}<|end|>\n<|assistant|>\n"
-
     payload = {
         "inputs": prompt,
-        "parameters": {
-            "max_new_tokens": 300,
-            "return_full_text": False
-        }
+        "parameters": {"max_new_tokens": 200, "return_full_text": False}
     }
 
-    # 2. Try Models in Order
-    for model_url in MODELS:
-        print(f"Trying model: {model_url}...")
-        response = query_huggingface(model_url, payload)
-        
-        # If connection failed entirely, try next model
-        if response is None:
-            continue
-
-        # If model is loading (503), wait and retry ONCE
-        if response.status_code == 503:
-            time.sleep(15)
-            response = query_huggingface(model_url, payload)
-        
-        # If Success
-        if response and response.status_code == 200:
-            data = response.json()
-            if isinstance(data, list) and "generated_text" in data[0]:
-                bot_reply = data[0]["generated_text"].strip()
-                update_history(user_id, "user", user_text)
-                update_history(user_id, "assistant", bot_reply)
-                return bot_reply
-        
-        # If 410 (Gone) or 401 (Unauthorized), loop to NEXT model
-        print(f"Model failed with {response.status_code}. Switching...")
-
-    return "All AI brains are asleep right now. Try again in 5 mins? 😴"
+    # Try 3 times to connect (in case server is busy)
+    for i in range(3):
+        try:
+            response = requests.post(API_URL, headers=headers, json=payload, timeout=20)
+            if response.status_code == 200:
+                return response.json()[0]["generated_text"].strip()
+            time.sleep(2) # Wait 2 seconds and try again
+        except:
+            pass
+            
+    return "Network is slow... ask me again?"
 
 # =====================
-# ROUTES
+# WEBHOOK (The Bridge)
 # =====================
 @app.route("/", methods=["POST"])
-def telegram_webhook():
+def telegram():
     try:
         data = request.get_json(force=True)
         if "message" in data:
             chat_id = data["message"]["chat"]["id"]
-            if "text" in data["message"]:
-                user_text = data["message"]["text"]
-                user_id = data["message"]["from"]["id"]
+            text = data["message"].get("text", "")
+            
+            if text:
+                # Show "typing..."
+                requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendChatAction", json={"chat_id": chat_id, "action": "typing"})
                 
-                # Typing action
-                requests.post(f"{TELEGRAM_API}/sendChatAction", json={"chat_id": chat_id, "action": "typing"})
+                # Get Answer
+                reply = ask_ai(text)
                 
-                ai_reply = ask_ai(user_id, user_text)
-                send_message(chat_id, ai_reply)
+                # Send Answer
+                requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage", json={"chat_id": chat_id, "text": reply})
+                
         return "ok", 200
-    except Exception as e:
-        print(e)
-        return "error", 500
+    except:
+        return "error", 200
 
+# Run this ONCE in browser: https://your-app.onrender.com/set_webhook
 @app.route("/set_webhook", methods=["GET"])
 def set_webhook():
-    s = requests.get(f"{TELEGRAM_API}/setWebhook?url={RENDER_EXTERNAL_URL}")
-    return f"Webhook Status: {s.text}", s.status_code
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/setWebhook?url={RENDER_URL}"
+    return requests.get(url).text
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
