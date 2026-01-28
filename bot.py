@@ -1,9 +1,10 @@
+import os
 import requests
 from telegram import Update
 from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTypes
 
-TELEGRAM_TOKEN = "PUT_YOUR_TELEGRAM_BOT_TOKEN_HERE"
-HF_TOKEN = "PUT_YOUR_HUGGINGFACE_TOKEN_HERE"
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
+HF_TOKEN = os.environ.get("HF_TOKEN")
 
 MODEL_URL = "https://api-inference.huggingface.co/models/google/flan-t5-base"
 HEADERS = {"Authorization": f"Bearer {HF_TOKEN}"}
