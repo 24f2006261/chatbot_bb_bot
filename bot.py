@@ -1,37 +1,62 @@
 import os
+import asyncio
 from flask import Flask, request
+
 from telegram import Update
-from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTypes
+from telegram.ext import (
+    ApplicationBuilder,
+    MessageHandler,
+    ContextTypes,
+    filters,
+)
 
+# =====================
+# ENV VARIABLES
+# =====================
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
-HF_TOKEN = os.environ.get("HF_TOKEN")
+RENDER_EXTERNAL_URL = os.environ.get("RENDER_EXTERNAL_URL")
 
+# =====================
+# FLASK APP
+# =====================
 app = Flask(__name__)
+
+# =====================
+# TELEGRAM APP
+# =====================
 tg_app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
 
+# =====================
+# TELEGRAM HANDLER
+# =====================
 async def reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Hello! Bot is working.")
+    await update.message.reply_text("Hello! Bot is working ✅")
 
 tg_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, reply))
 
+# =====================
+# WEBHOOK (SYNC — IMPORTANT)
+# =====================
 @app.route("/", methods=["POST"])
-async def webhook():
+def telegram_webhook():
     data = request.get_json(force=True)
     update = Update.de_json(data, tg_app.bot)
-    await tg_app.process_update(update)
+    tg_app.update_queue.put(update)   # ✅ correct way
     return "ok"
 
 @app.route("/", methods=["GET"])
 def index():
     return "Bot running"
 
+# =====================
+# MAIN
+# =====================
 if __name__ == "__main__":
-    import asyncio
 
     async def setup():
         await tg_app.initialize()
         await tg_app.bot.set_webhook(
-            url=os.environ["RENDER_EXTERNAL_URL"]
+            url=RENDER_EXTERNAL_URL
         )
 
     asyncio.run(setup())
