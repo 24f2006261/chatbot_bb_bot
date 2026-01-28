@@ -26,8 +26,14 @@ def index():
     return "Bot running"
 
 if __name__ == "__main__":
-    tg_app.initialize()
-    tg_app.bot.set_webhook(
-        url=os.environ["RENDER_EXTERNAL_URL"]
-    )
+    import asyncio
+
+    async def setup():
+        await tg_app.initialize()
+        await tg_app.bot.set_webhook(
+            url=os.environ["RENDER_EXTERNAL_URL"]
+        )
+
+    asyncio.run(setup())
+
     app.run(host="0.0.0.0", port=10000)
