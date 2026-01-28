@@ -1,10 +1,10 @@
 import os
 import requests
-import json
+import time
 from flask import Flask, request
 
 # =====================
-# ENV VARIABLES
+# CONFIG
 # =====================
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 HF_TOKEN = os.environ.get("HF_TOKEN")
@@ -12,15 +12,14 @@ RENDER_EXTERNAL_URL = os.environ.get("RENDER_EXTERNAL_URL")
 
 TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
 
-# Using Llama 3 8B (Smarter & Faster for logic/chat)
-HF_API_URL = "https://api-inference.huggingface.co/models/meta-llama/Meta-Llama-3-8B-Instruct"
+# Zephyr 7B Beta (Free, Smart, Ungated - Works Instantly)
+HF_API_URL = "https://api-inference.huggingface.co/models/HuggingFaceH4/zephyr-7b-beta"
 
 app = Flask(__name__)
 
 # =====================
-# MEMORY (Simple RAM Storage)
+# MEMORY
 # =====================
-# Stores last 10 messages per user to maintain context
 user_histories = {} 
 
 def get_history(user_id):
@@ -31,14 +30,12 @@ def get_history(user_id):
 def update_history(user_id, role, content):
     if user_id not in user_histories:
         user_histories[user_id] = []
-    # Append new message
     user_histories[user_id].append({"role": role, "content": content})
-    # Keep only last 10 messages to save tokens/memory
     if len(user_histories[user_id]) > 10:
         user_histories[user_id].pop(0)
 
 # =====================
-# SEND MESSAGE
+# SEND MSG
 # =====================
 def send_message(chat_id, text):
     requests.post(
@@ -48,7 +45,7 @@ def send_message(chat_id, text):
     )
 
 # =====================
-# AI LOGIC
+# AI ENGINE
 # =====================
 def ask_ai(user_id, user_text):
     headers = {
@@ -56,34 +53,20 @@ def ask_ai(user_id, user_text):
         "Content-Type": "application/json"
     }
     
-    # 1. Retrieve History
+    # 1. Prepare History
     history = get_history(user_id)
     
-    # 2. Build Prompt with System Context
-    # We use a special format for Llama 3 to understand it's a chat
-    messages = [
-        {
-            "role": "system", 
-            "content": (
-                "You are a smart, friendly AI companion. "
-                "You help with diet planning, studies, and life decisions. "
-                "Keep answers concise and readable for small screens. "
-                "Be human-like, empathetic, and practical."
-            )
-        }
-    ]
+    # Zephyr Prompt Format
+    prompt = "<|system|>\nYou are a helpful AI assistant for studies, diet, and life advice. Keep answers short and clear.<|endoftext|>\n"
     
-    # Add past conversation
     for msg in history:
-        messages.append(msg)
+        role = "user" if msg['role'] == "user" else "assistant"
+        prompt += f"<|{role}|>\n{msg['content']}<|endoftext|>\n"
     
-    # Add current user message
-    messages.append({"role": "user", "content": user_text})
+    prompt += f"<|user|>\n{user_text}<|endoftext|>\n<|assistant|>\n"
 
     payload = {
-        "inputs": str(messages), # HuggingFace sometimes needs raw string or specific formatting depending on endpoint
-        # For HF Inference API standard, we often send the raw prompt string constructed manually for best results:
-        # But let's try the structured way or fallback to prompt engineering below.
+        "inputs": prompt,
         "parameters": {
             "max_new_tokens": 400,
             "temperature": 0.7,
@@ -92,42 +75,33 @@ def ask_ai(user_id, user_text):
         }
     }
 
-    # *Manual Prompt Construction for Llama 3 (More reliable on free tier)*
-    # Llama 3 uses <|begin_of_text|><|start_header_id|>... format
-    full_prompt = "<|begin_of_text|>"
-    for m in messages:
-        full_prompt += f"<|start_header_id|>{m['role']}<|end_header_id|>\n\n{m['content']}<|eot_id|>"
-    full_prompt += "<|start_header_id|>assistant<|end_header_id|>\n\n"
-    
-    payload["inputs"] = full_prompt
+    # 2. Call API with Retry (Fixes "Model Loading" errors)
+    for attempt in range(3):
+        try:
+            response = requests.post(HF_API_URL, headers=headers, json=payload, timeout=45)
+            
+            # If AI is waking up (503), wait 20s and try again
+            if response.status_code == 503:
+                time.sleep(20)
+                continue
+                
+            if response.status_code == 200:
+                data = response.json()
+                if isinstance(data, list) and "generated_text" in data[0]:
+                    bot_reply = data[0]["generated_text"].strip()
+                    update_history(user_id, "user", user_text)
+                    update_history(user_id, "assistant", bot_reply)
+                    return bot_reply
+            
+            # If 410/400 error again, fail gracefully
+            if response.status_code >= 400:
+                return f"Error {response.status_code}. (AI servers are busy, try again in 1 min)"
+                
+        except Exception as e:
+            print(f"Error: {e}")
+            time.sleep(2)
 
-    # 3. Call API
-    try:
-        response = requests.post(HF_API_URL, headers=headers, json=payload, timeout=30)
-        
-        # Handle "Model Loading" (503 Error)
-        if response.status_code == 503:
-            return "Brains are warming up... wait 20s and try again! 🧠"
-            
-        if response.status_code != 200:
-            return f"Error: {response.status_code}. Try again."
-
-        data = response.json()
-        
-        if isinstance(data, list) and "generated_text" in data[0]:
-            bot_reply = data[0]["generated_text"].replace(full_prompt, "").strip()
-            
-            # Save to memory
-            update_history(user_id, "user", user_text)
-            update_history(user_id, "assistant", bot_reply)
-            
-            return bot_reply
-            
-        return "I heard you, but I'm confused. Say again?"
-        
-    except Exception as e:
-        print(e)
-        return "Connection glitch. Try again."
+    return "Thinking took too long... try again? 🧠"
 
 # =====================
 # ROUTES
@@ -142,31 +116,22 @@ def telegram_webhook():
             
             if "text" in data["message"]:
                 user_text = data["message"]["text"]
-                
-                # Show "typing..." status (Optional UX improvement)
+                # Typing indicator
                 requests.post(f"{TELEGRAM_API}/sendChatAction", json={"chat_id": chat_id, "action": "typing"})
                 
                 ai_reply = ask_ai(user_id, user_text)
                 send_message(chat_id, ai_reply)
-                
         return "ok", 200
-    except Exception as e:
-        print(f"Error: {e}")
+    except:
         return "error", 500
 
 @app.route("/set_webhook", methods=["GET"])
 def set_webhook():
-    # Call this URL manually once from your browser to fix the connection
-    url = f"{RENDER_EXTERNAL_URL}"
-    s = requests.get(f"{TELEGRAM_API}/setWebhook?url={url}")
+    s = requests.get(f"{TELEGRAM_API}/setWebhook?url={RENDER_EXTERNAL_URL}")
     if s.status_code == 200:
-        return "Webhook Set Successfully! Bot should work now.", 200
+        return "Webhook Live! Check Telegram.", 200
     else:
-        return f"Webhook setup failed: {s.text}", 400
-
-@app.route("/", methods=["GET"])
-def index():
-    return "Bot is Alive. Go to /set_webhook to connect Telegram."
+        return f"Fail: {s.text}", 400
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
